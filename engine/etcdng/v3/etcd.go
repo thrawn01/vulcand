@@ -1,6 +1,6 @@
 // package etcdng contains the implementation of the Etcd-backed engine, where all vulcand properties are implemented as directories or keys.
 // this engine is capable of watching the changes and generating events.
-package etcdv3ng
+package v3
 
 import (
 	"errors"
@@ -14,10 +14,13 @@ import (
 	"github.com/coreos/etcd/mvcc/mvccpb"
 	log "github.com/sirupsen/logrus"
 	"github.com/vulcand/vulcand/engine"
+	"github.com/vulcand/vulcand/engine/etcdng"
 	"github.com/vulcand/vulcand/plugin"
 	"github.com/vulcand/vulcand/secret"
 	"github.com/vulcand/vulcand/utils/json"
 	"golang.org/x/net/context"
+	"google.golang.org/grpc/grpclog"
+	"os"
 )
 
 type ng struct {
@@ -28,17 +31,8 @@ type ng struct {
 	context       context.Context
 	cancelFunc    context.CancelFunc
 	logsev        log.Level
-	options       Options
+	options       etcdng.EtcdOptions
 	requireQuorum bool
-}
-
-type Options struct {
-	EtcdConsistency         string
-	EtcdCaFile              string
-	EtcdCertFile            string
-	EtcdKeyFile             string
-	EtcdSyncIntervalSeconds int64
-	Box                     *secret.Box
 }
 
 var (
@@ -50,13 +44,18 @@ var (
 	serverRegex     = regexp.MustCompile("/backends/([^/]+)/servers/([^/]+)$")
 )
 
-func New(nodes []string, etcdKey string, registry *plugin.Registry, options Options) (engine.Engine, error) {
+func New(nodes []string, etcdKey string, registry *plugin.Registry, options etcdng.EtcdOptions) (engine.Engine, error) {
 	n := &ng{
 		nodes:    nodes,
 		registry: registry,
 		etcdKey:  "/" + etcdKey,
 		options:  options,
 	}
+
+	if options.Debug {
+		grpclog.SetLoggerV2(grpclog.NewLoggerV2WithVerbosity(os.Stderr, os.Stderr, os.Stderr, 4))
+	}
+
 	if err := n.connect(); err != nil {
 		return nil, err
 	}
@@ -238,7 +237,7 @@ func (n *ng) connect() error {
 	n.context = ctx
 	n.cancelFunc = cancelFunc
 	n.requireQuorum = true
-	if n.options.EtcdConsistency == "WEAK" {
+	if n.options.Consistency == "WEAK" {
 		n.requireQuorum = false
 	}
 	return nil
@@ -247,6 +246,9 @@ func (n *ng) connect() error {
 func (n *ng) getEtcdClientConfig() etcd.Config {
 	return etcd.Config{
 		Endpoints: n.nodes,
+		TLS:       etcdng.NewTLSConfig(n.options),
+		Username:  n.options.Username,
+		Password:  n.options.Password,
 	}
 }
 

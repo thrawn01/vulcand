@@ -1,13 +1,10 @@
 // package etcdng contains the implementation of the Etcd-backed engine, where all vulcand properties are implemented as directories or keys.
 // this engine is capable of watching the changes and generating events.
-package etcdv2ng
+package v2
 
 import (
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"regexp"
@@ -17,6 +14,7 @@ import (
 	etcd "github.com/coreos/etcd/client"
 	log "github.com/sirupsen/logrus"
 	"github.com/vulcand/vulcand/engine"
+	"github.com/vulcand/vulcand/engine/etcdng"
 	"github.com/vulcand/vulcand/plugin"
 	"github.com/vulcand/vulcand/secret"
 	"github.com/vulcand/vulcand/utils/json"
@@ -32,20 +30,11 @@ type ng struct {
 	context       context.Context
 	cancelFunc    context.CancelFunc
 	logsev        log.Level
-	options       Options
+	options       etcdng.EtcdOptions
 	requireQuorum bool
 }
 
-type Options struct {
-	EtcdConsistency         string
-	EtcdCaFile              string
-	EtcdCertFile            string
-	EtcdKeyFile             string
-	EtcdSyncIntervalSeconds int64
-	Box                     *secret.Box
-}
-
-func New(nodes []string, etcdKey string, registry *plugin.Registry, options Options) (engine.Engine, error) {
+func New(nodes []string, etcdKey string, registry *plugin.Registry, options etcdng.EtcdOptions) (engine.Engine, error) {
 	n := &ng{
 		nodes:    nodes,
 		registry: registry,
@@ -55,8 +44,8 @@ func New(nodes []string, etcdKey string, registry *plugin.Registry, options Opti
 	if err := n.reconnect(); err != nil {
 		return nil, err
 	}
-	if options.EtcdSyncIntervalSeconds > 0 {
-		go n.client.AutoSync(n.context, time.Duration(n.options.EtcdSyncIntervalSeconds)*time.Second)
+	if options.SyncIntervalSeconds > 0 {
+		go n.client.AutoSync(n.context, time.Duration(n.options.SyncIntervalSeconds)*time.Second)
 	}
 	return n, nil
 }
@@ -240,7 +229,7 @@ func (n *ng) reconnect() error {
 	n.client = client
 	n.kapi = etcd.NewKeysAPI(n.client)
 	n.requireQuorum = true
-	if n.options.EtcdConsistency == "WEAK" {
+	if n.options.Consistency == "WEAK" {
 		n.requireQuorum = false
 	}
 	return nil
@@ -250,35 +239,13 @@ func (n *ng) getEtcdClientConfig() etcd.Config {
 	return etcd.Config{
 		Endpoints: n.nodes,
 		Transport: n.newHttpTransport(),
+		Username:  n.options.Username,
+		Password:  n.options.Password,
 	}
 }
 
 func (n *ng) newHttpTransport() etcd.CancelableTransport {
-
-	var cc *tls.Config = nil
-
-	if n.options.EtcdCertFile != "" && n.options.EtcdKeyFile != "" {
-		var rpool *x509.CertPool = nil
-		if n.options.EtcdCaFile != "" {
-			if pemBytes, err := ioutil.ReadFile(n.options.EtcdCaFile); err == nil {
-				rpool = x509.NewCertPool()
-				rpool.AppendCertsFromPEM(pemBytes)
-			} else {
-				log.Errorf("Error reading Etcd Cert CA File: %v", err)
-			}
-		}
-
-		if tlsCert, err := tls.LoadX509KeyPair(n.options.EtcdCertFile, n.options.EtcdKeyFile); err == nil {
-			cc = &tls.Config{
-				RootCAs:            rpool,
-				Certificates:       []tls.Certificate{tlsCert},
-				InsecureSkipVerify: true,
-			}
-		} else {
-			log.Errorf("Error loading KeyPair for TLS client: %v", err)
-		}
-
-	}
+	cc := etcdng.NewTLSConfig(n.options)
 
 	//Copied from etcd.DefaultTransport declaration
 	//Wasn't sure how to make a clean reliable deep-copy, and instead
